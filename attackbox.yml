@@ -1,0 +1,8 @@
+---
+- hosts: attackbox
+  user: root
+  var_files:
+    - roles/attackbox/vars/main.yml
+
+  roles:
+    - attackbox
