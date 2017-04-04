@@ -1,0 +1,25 @@
+---
+- name: AnisblePrep-EC2
+  hosts: ec2prep
+  remote_user: ubuntu
+  sudo: yes
+
+  tasks:
+
+  - name: Disallow Password Login
+    lineinfile: dest=/etc/ssh/sshd_config regexp="^PasswordAuthentication" line="PasswordAuthentication no" state=present
+
+  - name: Allow root SSH access
+    lineinfile: dest=/etc/ssh/sshd_config regexp="^PermitRootLogin" line="PermitRootLogin yes" state=present 
+
+  - name: Restart sshd
+    service:
+      name: 'ssh'
+      state: 'restarted'
+
+  - name: Set up authorized_keys for the root user
+    authorized_key: user=root key="{{ item }}"
+    with_file:
+      - pubs/example.pub
+
+

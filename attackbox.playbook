@@ -1,0 +1,372 @@
+---
+- name: Setup Attack Box
+  hosts: attack
+
+  roles:
+  - { role: swap, swap_space: '4g'}
+
+  vars:
+    ecryptpass: "{{ lookup('password', 'credentials/' + inventory_hostname + '/ecryptfs.txt length=30 chars=ascii_letters') }}"
+    msfdbpass: "{{ lookup('password', 'credentials/' + inventory_hostname + '/msfdbpass.txt length=30 chars=ascii_letters') }}"
+
+  tasks:
+
+  - name: Set up authorized_keys for the root user
+    authorized_key: user=root key="{{ item }}"
+    with_file:
+      - pubs/example.pub
+
+  - name: Warn on old version of Kali
+    when: ansible_distribution_release == "moto"
+    fail: msg="Unsupported version of Kali Linux - please upgrade to Sana (2.0)"
+
+  - name: Add non-free Debian repos
+    when: ansible_distribution == "Debian"
+    apt_repository: repo='deb http://http.debian.net/debian {{ ansible_distribution_release }} non-free' state=present
+    register: nonfree
+
+  - name: Install Multiverse in AWS-Ubuntu
+    apt_repository: repo="{{item}}"
+    register: multiverse_installed
+    when: ansible_distribution == 'Ubuntu'
+    with_items:
+      - 'deb http://archive.ubuntu.com/ubuntu {{ansible_distribution_release}} multiverse'
+      - 'deb-src http://archive.ubuntu.com/ubuntu {{ansible_distribution_release}} multiverse'
+      - 'deb http://archive.ubuntu.com/ubuntu {{ansible_distribution_release}}-updates multiverse'
+      - 'deb-src http://archive.ubuntu.com/ubuntu {{ansible_distribution_release}}-updates multiverse'
+
+
+  - name: Update apt cache
+    apt: update_cache=yes 
+
+  - name: Install non-free APT-available Tools
+    apt: name={{item}} state=present
+    when: nonfree|success
+    with_items:
+      - rar
+
+  - name: Install Libraries and Deps
+    apt: name={{item}} state=present
+    with_items:
+      - build-essential
+      - autoconf
+      - curl
+      - ntpdate
+      - ecryptfs-utils #ecryptfs
+      - libffi-dev #chruby
+      - libgdbm-dev #chruby
+      - libncurses5-dev #chruby
+      - libreadline-dev # chruby
+      - libssl-dev #chruby
+      - libyaml-dev #chruby
+      - zlib1g-dev #chruby
+      - libpq-dev # Metasploit
+      - libpcap-dev # Metasploit
+      - libsqlite3-dev # Metasploit
+      - sudo # Metasploit database setup
+      - python-psycopg2 # For Metasploit database setup
+      - mingw32 # For Nanomet building and win bins
+      - mingw-w64 # For Nanomet 64bit
+      - python-colorama #Empire
+      - python-distlib #Empire
+      - python-html5lib #Empire
+      - python-wheel #Empire
+      - libexpat1-dev #Empire
+      - libpython-dev #Empire
+      - libpython2.7 #Empire
+      - python-dev #Empire
+      - python-chardet
+      - python-enum34 #Empire
+      - python-openssl #Empire
+      - python-pip #Empire
+      - python-pkg-resources #Empire
+      - python-ply #Empire
+      - python-pycparser #Empire
+      - python-requests #Empire
+      - python-setuptools #Empire
+      - python-support #Empire
+      - python-urllib3 #Empire
+      - swig #Empire
+      - python-m2crypto #Empire
+      - python-crypto #Impacket
+      - python-pyasn1 #Impacket
+      - libcrypt-ssleay-perl # padBuster
+      - libjpeg-dev # mitmproxy
+      - python-imaging # mitmproxy
+      - libxml2 # mitmproxy
+      - libxslt1-dev # mitmproxy
+
+  - name: PIP Install Libraries
+    pip: name={{item}} state=present
+    with_items:
+      - trufflehog        # truffleHog
+      - ldapdomaindump    # ldapdomaindump
+      - cffi              # Empire
+      - pycrypto          # Empire and Impacket
+      - iptools           # Empire
+      - pydispatcher      # Empire
+      - ndg-httpsclient   # Empire
+      - cryptography      # Empire
+      - passlib           # mitmproxy
+      - pyasn1            # mitmproxy
+      - pyOpenSSL         # mitmproxy
+      # - mitmproxy         # "pip install --upgrade cffi" will fix things if this breaks
+
+  - name: Install APT-available Tools
+    apt: name={{item}} state=present
+    with_items:
+      - cadaver
+      - smbclient
+      - cifs-utils
+      - nfs-common
+      - git
+      - subversion
+      - libnet-ssleay-perl
+      - mysql-client
+      - lsof
+      - iptstate
+      - upx-ucl
+      - ldap-utils
+      - screen
+      - tmux
+      - tcpdump
+      - htop
+      - sqlite3
+      - dnsutils
+      - polipo
+      - proxychains
+      - whois
+
+  - name: Copy over .screenrc
+    copy: src=files/dotfile_screenrc.txt dest=/root/.screenrc
+
+# Disable listening services that we don't need
+
+  - name: Stop RPCBind
+    when: ansible_distribution == "Debian"
+    service: name=rpcbind state=stopped enabled=no
+
+  - name: Start NFS-Common
+    when: ansible_distribution == "Debian"
+    service: name=nfs-common state=stopped enabled=no
+
+##### eCryptFS Setup
+
+  - name: Check for already created but unmount drive
+    shell: ls /opt/
+    register: ecryptunmounted
+
+  - name: Check for already created but mounted drive
+    shell: df -h
+    register: ecryptmounted
+
+  - name: Create /opt/ directory
+    file: path=/opt/ owner=root group=root mode=0755 state=directory
+
+  - name: Add encryption password to keyring
+    shell: 'printf "%s" "{{ ecryptpass }}" | ecryptfs-add-passphrase | grep -o "\[.*\]" | sed "s/\[//g;s/\]//g"'
+    register: password_hash
+    when: (ecryptmounted.stdout.find('ECRYPTFS') == -1 and ecryptmounted.stdout.find('/opt') == -1)
+
+  - name: Mount eCryptFS drive
+    shell: "mount -t ecryptfs -o key=passphrase:passphrase_passwd={{ ecryptpass }},user,noauto,exec,ecryptfs_cipher=aes,ecryptfs_key_bytes=32,ecryptfs_unlink_sigs,ecryptfs_enable_filename_crypto=y,ecryptfs_fnek_sig={{ password_hash.stdout }},verbosity=0 /opt/ /opt/"
+    when: (ecryptmounted.stdout.find('ECRYPTFS') == -1 and ecryptmounted.stdout.find('/opt') == -1)
+
+  - stat: path=/root/mountecrypt.sh
+    register: eCryptFSmountscript
+
+  - name: Create eCryptFS mount script
+    when: eCryptFSmountscript.stat.exists == False
+    template: src=./templates/mount.sh.j2 dest=/root/mountecrypt.sh mode=0770
+
+##### Create Logs Directory
+
+  - name: Create logs directory
+    file: path=/opt/logs/ state=directory
+
+##### Metasploit
+  - name: Install PostgreSQL for Metasploit
+    apt: name=postgresql state=present
+    register: postgres_install
+
+  - name: Start PostgreSQL
+    service: name=postgresql state=started enabled=yes
+
+  - name: Clone Metasploit
+    git: repo=https://github.com/rapid7/metasploit-framework.git dest=/opt/metasploit-framework
+    register: msf
+
+  - name: Pull MSF Ruby Version
+    slurp: src=/opt/metasploit-framework/.ruby-version
+    register: rubyversion
+
+##### ruby-install
+  - name: Clone ruby-install
+    git: repo=https://github.com/postmodern/ruby-install.git dest=/opt/ruby-install
+    register: rubyinstall
+
+  - name: Install Ruby-Install
+    #when: rubyinstall.changed
+    shell: "make install"
+    args:
+      chdir: /opt/ruby-install
+      executable: "/bin/bash"
+      creates: "/usr/local/bin/ruby-install"
+
+  - name: Install MSF version of Ruby
+    when: rubyinstall.changed
+    shell: "ruby-install ruby {{ rubyversion.content | b64decode | trim }}"
+    args:
+      chdir: /opt/ruby-install
+      executable: "/bin/bash"
+      creates: "/usr/local/src/ruby-{{ rubyversion.content | b64decode | trim }}/bin/rake"
+
+##### chruby
+  - name: Clone chruby
+    git: repo=https://github.com/postmodern/chruby.git dest=/opt/chruby
+    register: chruby
+
+  - name: Install Chruby
+    #when: chruby.changed
+    shell: "{{ item }}"
+    args:
+      chdir: /opt/chruby
+      executable: "/bin/bash"
+      creates: "/usr/local/share/chruby/chruby.sh"
+    with_items:
+      - make install
+      - source /usr/local/share/chruby/chruby.sh
+
+  - name: Put chruby loader in Profile.d
+    copy: src=files/chruby.sh dest=/etc/profile.d/chruby.sh mode=644
+
+  - name: Setup Metasploit Gems
+    #when: msf.changed
+    shell: "{{ item }}"
+    args:
+      chdir: /opt/metasploit-framework/
+      executable: "/bin/bash"
+    with_items:
+      - /usr/local/bin/chruby-exec ruby-{{ rubyversion.content | b64decode | trim }} -- gem install bundler --no-ri --no-rdoc
+      - /usr/local/bin/chruby-exec ruby-{{ rubyversion.content | b64decode | trim }} -- bundle install
+
+  - name: Setup Metasploit Database User
+    sudo: True
+    sudo_user: postgres
+    postgresql_db: name=msf
+
+  - name: Setup Metasploit Database # Generates a random 20 character password for the database
+    sudo: True
+    sudo_user: postgres
+    postgresql_user: db=msf name=msf priv=ALL role_attr_flags=CREATEDB,NOSUPERUSER password="{{ msfdbpass }}"
+
+  - name: Create Metasploit Home Directory for root
+    file: path=/root/.msf4/ state=directory
+
+  - name: Create Metasploit database.yml file
+    template: src=./templates/database.yml.j2 dest=/root/.msf4/database.yml
+
+  - name: Create Metasploit config file
+    template: src=./templates/msfconfig.yml.j2 dest=/root/.msf4/config
+
+##### NMAP 
+  - name: Clone Nmap
+    git: repo=https://github.com/nmap/nmap.git dest=/opt/nmap
+    register: nmap
+
+  - name: Build and install Nmap
+    when: nmap.changed
+    register: nmap_build
+    shell: "{{ item }}"
+    failed_when: "'Stop' in nmap_build.stderr"
+    args:
+      chdir: /opt/nmap/
+      executable: "/bin/bash"
+    with_items:
+      - ./configure
+      - make
+      - make -C ncat/
+      - make install
+      - git clean -df
+
+##### POWERSHELL EMPIRE
+  - name: Clone Powershell Empire
+    git: repo=https://github.com/PowerShellEmpire/Empire.git dest=/opt/empire
+
+  - stat: path=/opt/empire/data/empire.db
+    register: empire_db
+
+  - name: Setup Empire Database if not setup
+    when: empire_db.stat.exists == False
+    shell: "{{ item }}"
+    environment:
+      STAGING_KEY: RANDOM
+    args:
+      chdir: /opt/empire/setup/
+      executable: "/bin/bash"
+    with_items:
+      - ./install.sh
+
+
+##### LetsEncrypt
+  - name: Clone LetsEncrypt SSL
+    git: repo=https://github.com/letsencrypt/letsencrypt.git dest=/opt/letsencrypt
+
+##### Nanomet
+## TODO - Compile Nanomet x86 anx x64  
+  - name: Clone Nanomet
+    git: repo=https://github.com/kost/nanomet.git dest=/opt/nanomet
+    register: nanomet
+
+  - name: Build Nanomet
+    when: nanomet.changed
+    shell: "{{ item }}"
+    args:
+      chdir: /opt/nanomet/
+      executable: "/bin/bash"
+      creates: /opt/nanomet/nm32.exe
+    with_items:
+      - make CC=i586-mingw32msvc-gcc
+      - mv nanomet.exe nm32.exe
+
+##### Nikto
+  - name: Clone Nikto
+    git: repo=https://github.com/sullo/nikto.git dest=/opt/nikto
+
+##### IMPACKET
+  - name: Clone Impacket
+    git: repo=https://github.com/CoreSecurity/impacket.git dest=/opt/impacket
+    register: impacket
+
+  - name: Install Impacket library only if repository changed
+    when: impacket.changed
+    command: python setup.py install chdir=/opt/impacket/
+
+##### SECLISTS
+  - name: Clone SecLists
+    git: repo=https://github.com/danielmiessler/SecLists.git dest=/opt/seclists
+
+##### PADBUSTER
+  - name: Clone Automated Padbuster
+    git: repo=https://github.com/gw0/PadBuster.git dest=/opt/padbuster
+
+##### SQLMAP
+  - name: Clone SQLMap
+    git: repo=https://github.com/sqlmapproject/sqlmap.git dest=/opt/sqlmap
+
+##### POST EXPLOITATION BINS
+  - name: Clone Post Exploitation bins
+    git: repo=https://github.com/mubix/post-exploitation.git dest=/opt/post-exploitation
+
+##### KERBEROAST
+  - name: Clone Kerberoast
+    git: repo=https://github.com/nidem/kerberoast.git dest=/opt/kerberoast
+
+##### RESPONDER
+  - name: Clone Responder
+    git: repo=https://github.com/SpiderLabs/Responder.git dest=/opt/responder
+
+##### SUBBRUTE
+  - name: Clone SubBrute
+    git: repo=https://github.com/TheRook/subbrute.git dest=/opt/subbrute
+

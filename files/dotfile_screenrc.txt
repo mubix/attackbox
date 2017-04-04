@@ -1,0 +1,15 @@
+defshell -bash
+startup_message off
+multiuser on
+defscrollback 10000
+logfile /opt/logs/$USER-screenlog.%H.%n.%Y%m%d-%0c:%s.%t.log
+logfile flush 5
+logtstamp on
+deflog on
+defmonitor on
+caption always "%{= gk}%-Lw%{= bW}%50> %n%f* %t %{-}%+Lw%< %= %{= rk} %H %l %{= gk} %0c:%s %{-}"
+defutf8 on
+activity "Activity in %t(%n)"
+screen -t msf        0
+screen -t empire     1
+screen -t impacket   2

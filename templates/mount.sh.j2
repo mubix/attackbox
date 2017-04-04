@@ -1,0 +1,3 @@
+#!/bin/bash
+
+mount -t ecryptfs -o key=passphrase:passphrase_passwd={{ ecryptpass }},user,noauto,exec,ecryptfs_cipher=aes,ecryptfs_key_bytes=32,ecryptfs_unlink_sigs,ecryptfs_enable_filename_crypto=y,ecryptfs_fnek_sig={{ password_hash.stdout }},verbosity=0 /opt/ /opt/
